@@ -233,7 +233,7 @@ function HomeScreen({ election, votes, setScreen, loadData }) {
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px" }}>
             <span style={{ fontSize: 13, color: C.textMuted }}>Votes enregistrés</span>
-            <span style={{ fontSize: 13, fontWeight: 500 }}>{votes.length}</span>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>{votes.filter(v => election.candidates.includes(v.candidate)).length}</span>
           </div>
         </Section>
       )}
@@ -371,8 +371,8 @@ function VoteScreen({ election, setScreen, castVote }) {
       <Section style={{ marginBottom: "1rem" }}>
         {election.candidates.map((c, i) => (
           <button key={c} onClick={() => setCandidate(c)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: candidate === c ? C.bgSecondary : "transparent", border: "none", borderBottom: i < election.candidates.length - 1 ? `0.5px solid ${C.border}` : "none", cursor: "pointer", textAlign: "left" }}>
-            <span style={{ fontSize: 16 }}>{candidate === c ? "⦿" : "○"}</span>
-            <span style={{ fontSize: 14, fontWeight: candidate === c ? 500 : 400 }}>{c}</span>
+            <span style={{ fontSize: 16, color: C.text }}>{candidate === c ? "⦿" : "○"}</span>
+            <span style={{ fontSize: 14, fontWeight: candidate === c ? 500 : 400, color: C.text }}>{c}</span>
           </button>
         ))}
       </Section>
@@ -447,7 +447,7 @@ function ResultsScreen({ election, votes, setScreen, loadData, closeElection, re
   const isOpen = election.status === "open";
   const tally = Object.fromEntries(election.candidates.map(c => [c, 0]));
   votes.forEach(v => { if (tally[v.candidate] !== undefined) tally[v.candidate]++; });
-  const total = votes.length;
+  const total = Object.values(tally).reduce((a, b) => a + b, 0);
   const maxV = Math.max(...Object.values(tally), 0);
 
   async function doAction() {

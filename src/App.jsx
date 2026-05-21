@@ -309,7 +309,7 @@ function CreateScreen({ setScreen, createElection }) {
   );
 }
 
-function ShareInfoScreen({ election, setScreen }) {
+function ShareInfoScreen({ election, setScreen, loadData }) {
   const [copied, setCopied] = useState(false);
   return (
     <>
@@ -331,7 +331,7 @@ function ShareInfoScreen({ election, setScreen }) {
         <Btn variant="secondary" onClick={() => { navigator.clipboard.writeText(window.location.href).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); }}>
           {copied ? "✓ Lien copié !" : "Copier le lien"}
         </Btn>
-        <Btn onClick={() => setScreen("home")}>Accéder à l'accueil</Btn>
+        <Btn onClick={() => { loadData(); setScreen("home"); }}>Accéder à l'accueil</Btn>
       </div>
     </>
   );

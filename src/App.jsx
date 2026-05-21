@@ -205,7 +205,7 @@ function PrimaryBtn({ icon, label, onClick }) {
 function ActionButton({ icon, label, sublabel, onClick, variant = "default" }) {
   const isPrimary = variant === "primary";
   return (
-    <button onClick={onClick} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, background: isPrimary ? "#1a1a1a" : C.bg, border: `0.5px solid ${isPrimary ? "transparent" : C.border}`, cursor: "pointer", textAlign: "left" }}>
+    <button onClick={onClick} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, background: isPrimary ? "#1a1a1a" : C.bg, border: isPrimary ? "1px solid rgba(255,255,255,0.18)" : `0.5px solid ${C.border}`, cursor: "pointer", textAlign: "left" }}>
       <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
       <div style={{ flex: 1 }}>
         <div style={{ fontSize: 14, fontWeight: 500, color: isPrimary ? "#fff" : C.text }}>{label}</div>

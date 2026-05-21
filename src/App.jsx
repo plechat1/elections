@@ -188,6 +188,20 @@ function Field({ label, value, onChange, placeholder, type = "text", hint }) {
   );
 }
 
+function PrimaryBtn({ icon, label, onClick }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "13px 20px", borderRadius: 12, background: hover ? "#333" : "#1a1a1a", border: "none", cursor: "pointer", transition: "background 0.15s, transform 0.1s", transform: hover ? "translateY(-1px)" : "translateY(0)" }}>
+      <span style={{ fontSize: 16 }}>{icon}</span>
+      <span style={{ fontSize: 15, fontWeight: 500, color: "#fff" }}>{label}</span>
+    </button>
+  );
+}
+
 function ActionButton({ icon, label, sublabel, onClick, variant = "default" }) {
   const isPrimary = variant === "primary";
   return (
@@ -225,7 +239,7 @@ function HomeScreen({ election, votes, setScreen, loadData }) {
       )}
       {!election && <Banner icon="ℹ️" text="Aucune élection active. L'organisateur crée une élection puis partage ce lien avec les membres." />}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {!election && <ActionButton icon="➕" label="Créer une élection" sublabel="Définir les candidats et ouvrir le vote" onClick={() => setScreen("create")} variant="primary" />}
+        {!election && <PrimaryBtn icon="➕" label="Créer une élection" onClick={() => setScreen("create")} />}
         {election?.status === "open" && <ActionButton icon="📨" label="Voter" sublabel="Choisir mon candidat de façon anonyme" onClick={() => setScreen("vote")} variant="primary" />}
         {election && <ActionButton icon="📊" label="Voir les résultats" sublabel={election.status === "open" ? "Résultats masqués jusqu'à la clôture" : "Résultats finaux disponibles"} onClick={() => { loadData(); setScreen("results"); }} />}
         {election && <ActionButton icon="🔍" label="Vérifier mon vote" sublabel="Confirmer que mon vote est bien enregistré" onClick={() => setScreen("verify")} />}

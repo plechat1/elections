@@ -195,7 +195,7 @@ function PrimaryBtn({ icon, label, onClick }) {
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "13px 20px", borderRadius: 12, background: hover ? "#333" : "#1a1a1a", border: "none", cursor: "pointer", transition: "background 0.15s, transform 0.1s", transform: hover ? "translateY(-1px)" : "translateY(0)" }}>
+      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "13px 20px", borderRadius: 12, background: hover ? "#333" : "#1a1a1a", border: "1px solid rgba(255,255,255,0.18)", cursor: "pointer", transition: "background 0.15s, transform 0.1s", transform: hover ? "translateY(-1px)" : "translateY(0)" }}>
       <span style={{ fontSize: 16 }}>{icon}</span>
       <span style={{ fontSize: 15, fontWeight: 500, color: "#fff" }}>{label}</span>
     </button>
@@ -289,7 +289,7 @@ function CreateScreen({ setScreen, createElection }) {
           <div key={i} style={{ display: "flex", alignItems: "center", borderBottom: i < candidates.length - 1 ? `0.5px solid ${C.border}` : "none" }}>
             <span style={{ fontSize: 12, color: C.textMuted, padding: "0 10px", minWidth: 24, fontWeight: 500 }}>{i + 1}</span>
             <input type="text" value={c} onChange={e => { const u = [...candidates]; u[i] = e.target.value; setCandidates(u); }} placeholder={`Candidat ${i + 1}`}
-              style={{ flex: 1, border: "none", outline: "none", padding: "10px 8px", fontSize: 14, background: "transparent" }} />
+              style={{ flex: 1, border: "none", outline: "none", padding: "10px 8px", fontSize: 14, background: "transparent", color: C.text }} />
             {candidates.length > 2 && (
               <button onClick={() => setCandidates(candidates.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted, fontSize: 16, padding: "0 12px" }}>✕</button>
             )}

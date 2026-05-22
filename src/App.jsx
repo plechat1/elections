@@ -122,8 +122,9 @@ export default function App() {
     if (h !== election.adminHash) return false;
     const batch = writeBatch(db);
     batch.delete(electionRef);
-    (await getDocs(codesCol)).docs.forEach(d => batch.delete(d.ref));
-    (await getDocs(votesCol)).docs.forEach(d => batch.delete(d.ref));
+    const [codesDocs, votesDocs] = await Promise.all([getDocs(codesCol), getDocs(votesCol)]);
+    codesDocs.docs.forEach(d => batch.delete(d.ref));
+    votesDocs.docs.forEach(d => batch.delete(d.ref));
     await batch.commit();
     setElection(null); setVotes([]); setScreen("home"); return true;
   }
@@ -251,7 +252,7 @@ function Field({ label, value, onChange, placeholder, type = "text", hint }) {
     <div style={{ marginBottom: "0.875rem" }}>
       {label && <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: C.textMuted, marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</label>}
       <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-        style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 14, outline: "none", color: C.text }} />
+        style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 14, outline: "none", color: C.text, background: C.bg }} />
       {hint && <p style={{ fontSize: 12, color: C.textMuted, margin: "4px 0 0" }}>{hint}</p>}
     </div>
   );
@@ -346,7 +347,7 @@ function CreateScreen({ setScreen, createElection }) {
           <div key={i} style={{ display: "flex", alignItems: "center", borderBottom: i < candidates.length - 1 ? `0.5px solid ${C.border}` : "none" }}>
             <span style={{ fontSize: 12, color: C.textMuted, padding: "0 10px", minWidth: 24, fontWeight: 500 }}>{i + 1}</span>
             <input type="text" value={c} onChange={e => { const u = [...candidates]; u[i] = e.target.value; setCandidates(u); }} placeholder={`Candidat ${i + 1}`}
-              style={{ flex: 1, border: "none", outline: "none", padding: "10px 8px", fontSize: 14, background: "transparent", color: C.text }} />
+              style={{ flex: 1, border: "none", outline: "none", padding: "10px 8px", fontSize: 14, background: C.bg, color: C.text }} />
             {candidates.length > 2 && (
               <button onClick={() => setCandidates(candidates.filter((_, j) => j !== i))} style={{ background: C.orangeLight, border: "none", cursor: "pointer", color: C.orangeText, fontSize: 16, padding: "0 12px" }}>✕</button>
             )}
@@ -447,15 +448,15 @@ function VoteScreen({ election, setScreen, castVote }) {
       <Section style={{ padding: "1rem 1.25rem", marginBottom: "0.75rem" }}>
         <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: C.textMuted, marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.05em" }}>Votre code</label>
         <input type="text" value={code} onChange={e => setCode(e.target.value)} placeholder="Ex : X7K2-9QLP" maxLength={9}
-          style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 18, fontFamily: "monospace", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", outline: "none", color: C.text }} />
+          style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 18, fontFamily: "monospace", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", outline: "none", color: C.text, background: C.bg }} />
       </Section>
 
       <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: C.textMuted, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>Votre candidat</label>
       <Section style={{ marginBottom: "1rem" }}>
         {election.candidates.map((c, i) => (
           <button key={c} onClick={() => setCandidate(c)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: candidate === c ? C.bgSecondary : "transparent", border: "none", borderBottom: i < election.candidates.length - 1 ? `0.5px solid ${C.border}` : "none", cursor: "pointer", textAlign: "left" }}>
-            <span style={{ fontSize: 16 }}>{candidate === c ? "⦿" : "○"}</span>
-            <span style={{ fontSize: 14, fontWeight: candidate === c ? 500 : 400 }}>{c}</span>
+            <span style={{ fontSize: 16, color: C.text }}>{candidate === c ? "⦿" : "○"}</span>
+            <span style={{ fontSize: 14, fontWeight: candidate === c ? 500 : 400, color: C.text }}>{c}</span>
           </button>
         ))}
       </Section>
@@ -505,7 +506,7 @@ function VerifyScreen({ verifyCode, verifyResult, setVerifyResult }) {
       <Section style={{ padding: "1rem 1.25rem", marginBottom: "0.75rem" }}>
         <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: C.textMuted, marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.05em" }}>Votre code</label>
         <input type="text" value={code} onChange={e => setCode(e.target.value)} placeholder="Ex : X7K2-9QLP" maxLength={9}
-          style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 18, fontFamily: "monospace", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", outline: "none", color: C.text }} />
+          style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 18, fontFamily: "monospace", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", outline: "none", color: C.text, background: C.bg }} />
       </Section>
       <Btn onClick={async () => { setBusy(true); await verifyCode(code); setBusy(false); }} disabled={busy}>
         {busy ? "Vérification…" : "Vérifier"}

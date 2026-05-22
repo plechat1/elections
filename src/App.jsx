@@ -120,13 +120,18 @@ export default function App() {
   async function resetElection(adminPin) {
     const h = await sha256(adminPin + "__admin__");
     if (h !== election.adminHash) return false;
-    const batch = writeBatch(db);
-    batch.delete(electionRef);
-    const [codesDocs, votesDocs] = await Promise.all([getDocs(codesCol), getDocs(votesCol)]);
-    codesDocs.docs.forEach(d => batch.delete(d.ref));
-    votesDocs.docs.forEach(d => batch.delete(d.ref));
-    await batch.commit();
-    setElection(null); setVotes([]); setScreen("home"); return true;
+    try {
+      const batch = writeBatch(db);
+      batch.delete(electionRef);
+      const [codesDocs, votesDocs] = await Promise.all([getDocs(codesCol), getDocs(votesCol)]);
+      codesDocs.docs.forEach(d => batch.delete(d.ref));
+      votesDocs.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+      setElection(null); setVotes([]); setScreen("home"); return true;
+    } catch (e) {
+      console.error("resetElection:", e);
+      return { error: e.message || "Erreur Firestore" };
+    }
   }
 
   const ctx = { election, votes, screen, setScreen, createElection, castVote, verifyCode, closeElection, resetElection, loadData, lastVote, generatedCodes, verifyResult, setVerifyResult };
@@ -538,8 +543,10 @@ function ResultsScreen({ election, votes, setScreen, loadData, closeElection, re
     if (!pin) return setError("Entrez le code admin.");
     setBusy(true); setError("");
     const ok = action === "close" ? await closeElection(pin) : await resetElection(pin);
-    if (!ok) { setError("Code admin incorrect."); setBusy(false); }
-    else { setAction(null); setPin(""); setBusy(false); }
+    setBusy(false);
+    if (!ok) { setError("Code admin incorrect."); }
+    else if (ok?.error) { setError(ok.error); }
+    else { setAction(null); setPin(""); }
   }
 
   return (

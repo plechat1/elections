@@ -159,6 +159,9 @@ const C = {
   danger: "#991b1b", dangerBg: "#fef2f2", dangerBorder: "#fecaca",
   warning: "#92400e", warningBg: "#fffbeb", warningBorder: "#fde68a",
   info: "#1e40af", infoBg: "#eff6ff", infoBorder: "#bfdbfe",
+  orange: "#f97316", orangeDark: "#ea580c",
+  orangeLight: "#fff7ed", orangeMid: "#fed7aa",
+  orangeText: "#7c2d12", orangeBorder: "#fdba74",
 };
 
 // ─── Composants réutilisables ─────────────────────────────────────────────────
@@ -167,7 +170,7 @@ function Header({ screen, setScreen, election }) {
   return (
     <div style={{ marginBottom: "1.5rem" }}>
       {screen !== "home" && (
-        <button onClick={() => setScreen("home")} style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted, fontSize: 13, display: "flex", alignItems: "center", gap: 4, padding: 0, marginBottom: "1rem" }}>
+        <button onClick={() => setScreen("home")} style={{ background: C.orangeLight, border: `0.5px solid ${C.orangeBorder}`, borderRadius: 6, cursor: "pointer", color: C.orangeText, fontSize: 13, display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", marginBottom: "1rem" }}>
           ← Accueil
         </button>
       )}
@@ -202,13 +205,16 @@ function Banner({ icon, text, variant = "info" }) {
 }
 
 function Btn({ children, onClick, disabled, variant = "primary" }) {
+  const [hover, setHover] = useState(false);
   const v = {
-    primary:   { bg: "#1a1a1a", color: "#fff",    border: "transparent" },
-    secondary: { bg: "transparent", color: C.text, border: C.border },
-    danger:    { bg: C.dangerBg, color: C.danger,  border: C.dangerBorder },
+    primary:   { bg: hover ? C.orangeDark : C.orange, color: "#fff", border: C.orange },
+    secondary: { bg: hover ? C.orangeMid : C.orangeLight, color: C.orangeText, border: C.orangeBorder },
+    danger:    { bg: hover ? "#fecaca" : C.dangerBg, color: C.danger, border: C.dangerBorder },
   }[variant];
   return (
-    <button onClick={onClick} disabled={disabled} style={{ width: "100%", padding: "10px 16px", borderRadius: 8, fontWeight: 500, fontSize: 14, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1, border: `0.5px solid ${v.border}`, background: v.bg, color: v.color }}>
+    <button onClick={onClick} disabled={disabled}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{ width: "100%", padding: "10px 16px", borderRadius: 8, fontWeight: 500, fontSize: 14, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1, border: `0.5px solid ${v.border}`, background: v.bg, color: v.color, transition: "background 0.15s" }}>
       {children}
     </button>
   );
@@ -218,7 +224,7 @@ function PrimaryBtn({ icon, label, onClick }) {
   const [hover, setHover] = useState(false);
   return (
     <button onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
-      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "13px 20px", borderRadius: 12, background: hover ? "#333" : "#1a1a1a", border: "none", cursor: "pointer", transition: "background 0.15s, transform 0.1s", transform: hover ? "translateY(-1px)" : "translateY(0)" }}>
+      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "13px 20px", borderRadius: 12, background: hover ? C.orangeDark : C.orange, border: "none", cursor: "pointer", transition: "background 0.15s, transform 0.1s", transform: hover ? "translateY(-1px)" : "translateY(0)" }}>
       <span style={{ fontSize: 16 }}>{icon}</span>
       <span style={{ fontSize: 15, fontWeight: 500, color: "#fff" }}>{label}</span>
     </button>
@@ -226,8 +232,10 @@ function PrimaryBtn({ icon, label, onClick }) {
 }
 
 function ActionButton({ icon, label, sublabel, onClick }) {
+  const [hover, setHover] = useState(false);
   return (
-    <button onClick={onClick} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, background: C.bg, border: `0.5px solid ${C.border}`, cursor: "pointer", textAlign: "left" }}>
+    <button onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, background: hover ? C.orangeMid : C.orangeLight, border: `0.5px solid ${C.orangeBorder}`, cursor: "pointer", textAlign: "left", transition: "background 0.15s" }}>
       <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
       <div style={{ flex: 1 }}>
         <div style={{ fontSize: 14, fontWeight: 500, color: C.text }}>{label}</div>
@@ -294,7 +302,7 @@ function HomeScreen({ election, votes, setScreen, loadData }) {
               ["🎟️", "L'organisateur génère un code unique par membre"],
               ["📩", "Chaque membre reçoit son code en privé"],
               ["🗳️", "On vote avec son code — un seul vote possible par code"],
-              ["🔒", "Les codes sont hashés : personne ne peut savoir qui a voté pour qui"],
+              ["🔒", "Les codes sont hashés : personne (même pas l'organisateur) ne peut savoir qui a voté pour qui"],
             ].map(([icon, txt]) => (
               <div key={txt} style={{ display: "flex", gap: 10, marginBottom: 8 }}>
                 <span style={{ flexShrink: 0 }}>{icon}</span>
@@ -340,11 +348,11 @@ function CreateScreen({ setScreen, createElection }) {
             <input type="text" value={c} onChange={e => { const u = [...candidates]; u[i] = e.target.value; setCandidates(u); }} placeholder={`Candidat ${i + 1}`}
               style={{ flex: 1, border: "none", outline: "none", padding: "10px 8px", fontSize: 14, background: "transparent" }} />
             {candidates.length > 2 && (
-              <button onClick={() => setCandidates(candidates.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted, fontSize: 16, padding: "0 12px" }}>✕</button>
+              <button onClick={() => setCandidates(candidates.filter((_, j) => j !== i))} style={{ background: C.orangeLight, border: "none", cursor: "pointer", color: C.orangeText, fontSize: 16, padding: "0 12px" }}>✕</button>
             )}
           </div>
         ))}
-        <button onClick={() => setCandidates([...candidates, ""])} style={{ width: "100%", background: "none", border: "none", borderTop: `0.5px solid ${C.border}`, cursor: "pointer", padding: "10px 14px", fontSize: 13, color: C.textMuted, textAlign: "left" }}>
+        <button onClick={() => setCandidates([...candidates, ""])} style={{ width: "100%", background: C.orangeLight, border: "none", borderTop: `0.5px solid ${C.orangeBorder}`, cursor: "pointer", padding: "10px 14px", fontSize: 13, color: C.orangeText, textAlign: "left" }}>
           + Ajouter un candidat
         </button>
       </Section>
@@ -385,7 +393,7 @@ function CodesScreen({ generatedCodes, setScreen }) {
       <Banner icon="⚠️" text="Distribuez chaque code en privé (WhatsApp, SMS…). Une fois cette page quittée, les codes en clair ne seront plus accessibles." variant="warning" />
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
-        <button onClick={copyAll} style={{ background: "none", border: `0.5px solid ${C.border}`, borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", color: C.textMuted }}>
+        <button onClick={copyAll} style={{ background: C.orangeLight, border: `0.5px solid ${C.orangeBorder}`, borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", color: C.orangeText }}>
           {copiedAll ? "✓ Tout copié" : "📋 Copier tous les codes"}
         </button>
       </div>
@@ -397,7 +405,7 @@ function CodesScreen({ generatedCodes, setScreen }) {
               <span style={{ fontSize: 12, color: C.textMuted, marginRight: 10 }}>Membre {i + 1}</span>
               <span style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 600, letterSpacing: "0.1em", color: C.text }}>{code}</span>
             </div>
-            <button onClick={() => copyCode(code, i)} style={{ background: "none", border: `0.5px solid ${C.border}`, borderRadius: 6, padding: "3px 10px", fontSize: 12, cursor: "pointer", color: copiedIndex === i ? C.success : C.textMuted }}>
+            <button onClick={() => copyCode(code, i)} style={{ background: C.orangeLight, border: `0.5px solid ${C.orangeBorder}`, borderRadius: 6, padding: "3px 10px", fontSize: 12, cursor: "pointer", color: copiedIndex === i ? C.success : C.orangeText }}>
               {copiedIndex === i ? "✓" : "Copier"}
             </button>
           </div>
@@ -568,7 +576,7 @@ function ResultsScreen({ election, votes, setScreen, loadData, closeElection, re
       )}
 
       {!isOpen && (
-        <button onClick={loadData} style={{ background: "none", border: "none", fontSize: 13, color: C.textMuted, cursor: "pointer", display: "flex", alignItems: "center", gap: 5, padding: "0 0 12px" }}>
+        <button onClick={loadData} style={{ background: C.orangeLight, border: `0.5px solid ${C.orangeBorder}`, borderRadius: 6, fontSize: 13, color: C.orangeText, cursor: "pointer", display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", marginBottom: 12 }}>
           🔄 Actualiser
         </button>
       )}

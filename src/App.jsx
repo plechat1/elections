@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, addDoc, getDocs, query, where } from "firebase/firestore";
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, writeBatch } from "firebase/firestore";
 
 // config Firebase
 const firebaseConfig = {
@@ -16,9 +16,9 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// Références Firestore
 const electionRef = doc(db, "election", "current");
 const votesCol = collection(db, "votes");
+const codesCol = collection(db, "codes");
 
 async function sha256(text) {
   const data = new TextEncoder().encode(text);
@@ -26,96 +26,131 @@ async function sha256(text) {
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+// Génère un code lisible ex: X7K2-9QLP (sans caractères ambigus 0/O, 1/I)
+function generateCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 8; i++) {
+    if (i === 4) code += "-";
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
+// Normalise avant de hasher : majuscules, sans tiret
+function normalizeCode(code) {
+  return code.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+
 export default function App() {
   const [screen, setScreen] = useState("home");
   const [election, setElection] = useState(null);
   const [votes, setVotes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lastVote, setLastVote] = useState(null);
+  const [generatedCodes, setGeneratedCodes] = useState([]);
   const [verifyResult, setVerifyResult] = useState(undefined);
 
   useEffect(() => { loadData(); }, []);
 
   async function loadData() {
     setLoading(true);
-    try {
-      const snap = await getDoc(electionRef);
-      setElection(snap.exists() ? snap.data() : null);
-    } catch (e) { setElection(null); }
-    try {
-      const snap = await getDocs(votesCol);
-      setVotes(snap.docs.map(d => d.data()));
-    } catch (e) { setVotes([]); }
+    try { const s = await getDoc(electionRef); setElection(s.exists() ? s.data() : null); } catch { setElection(null); }
+    try { const s = await getDocs(votesCol); setVotes(s.docs.map(d => d.data())); } catch { setVotes([]); }
     setLoading(false);
   }
 
-  async function createElection(candidates, adminPin) {
+  async function createElection(candidates, adminPin, numMembers) {
     const adminHash = await sha256(adminPin + "__admin__");
-    const config = { candidates, adminHash, status: "open" };
-    await setDoc(electionRef, config);
-    // Supprimer les anciens votes
-    const snap = await getDocs(votesCol);
-    await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
-    setElection(config); setVotes([]); setScreen("shareInfo");
+    const codes = Array.from({ length: numMembers }, generateCode);
+    const codeHashes = await Promise.all(codes.map(c => sha256(normalizeCode(c))));
+
+    const config = { candidates, adminHash, status: "open", totalCodes: numMembers };
+    const batch = writeBatch(db);
+
+    // Nettoyage de l'ancienne élection
+    (await getDocs(codesCol)).docs.forEach(d => batch.delete(d.ref));
+    (await getDocs(votesCol)).docs.forEach(d => batch.delete(d.ref));
+
+    batch.set(electionRef, config);
+    codeHashes.forEach(hash => batch.set(doc(codesCol, hash), { used: false }));
+    await batch.commit();
+
+    setElection(config); setVotes([]);
+    setGeneratedCodes(codes);
+    setScreen("codes");
   }
 
-  async function castVote(pseudonym, secret, candidate) {
-    const vid = await sha256(pseudonym.toLowerCase().trim() + "|||" + secret.trim());
-    const existing = await getDocs(query(votesCol, where("vid", "==", vid)));
-    if (!existing.empty) return { error: "Ce pseudonyme a déjà voté." };
-    await addDoc(votesCol, { vid, candidate });
-    const snap = await getDocs(votesCol);
-    setVotes(snap.docs.map(d => d.data()));
+  async function castVote(code, candidate) {
+    const hash = await sha256(normalizeCode(code));
+    const codeRef = doc(db, "codes", hash);
+    const snap = await getDoc(codeRef);
+
+    if (!snap.exists()) return { error: "Code invalide." };
+    if (snap.data().used) return { error: "Ce code a déjà été utilisé." };
+
+    // Opération atomique : marquer le code utilisé + enregistrer le vote
+    const batch = writeBatch(db);
+    batch.update(codeRef, { used: true });
+    batch.set(doc(votesCol), { candidate }); // ID aléatoire — non lié au code
+    await batch.commit();
+
+    const updated = await getDocs(votesCol);
+    setVotes(updated.docs.map(d => d.data()));
     setLastVote({ candidate }); setScreen("voted");
     return { success: true };
   }
 
-  async function verifyVote(pseudonym, secret) {
-    const vid = await sha256(pseudonym.toLowerCase().trim() + "|||" + secret.trim());
-    const snap = await getDocs(query(votesCol, where("vid", "==", vid)));
-    setVerifyResult(!snap.empty ? snap.docs[0].data().candidate : null);
+  async function verifyCode(code) {
+    const hash = await sha256(normalizeCode(code));
+    const snap = await getDoc(doc(db, "codes", hash));
+    if (!snap.exists()) setVerifyResult("invalid");
+    else setVerifyResult(snap.data().used ? "used" : "unused");
   }
 
   async function closeElection(adminPin) {
     const h = await sha256(adminPin + "__admin__");
     if (h !== election.adminHash) return false;
     const updated = { ...election, status: "closed" };
-    await setDoc(electionRef, updated);
-    setElection(updated); return true;
+    await setDoc(electionRef, updated); setElection(updated); return true;
   }
 
   async function resetElection(adminPin) {
     const h = await sha256(adminPin + "__admin__");
     if (h !== election.adminHash) return false;
-    await deleteDoc(electionRef);
-    const snap = await getDocs(votesCol);
-    await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+    const batch = writeBatch(db);
+    batch.delete(electionRef);
+    (await getDocs(codesCol)).docs.forEach(d => batch.delete(d.ref));
+    (await getDocs(votesCol)).docs.forEach(d => batch.delete(d.ref));
+    await batch.commit();
     setElection(null); setVotes([]); setScreen("home"); return true;
   }
 
-  const ctx = { election, votes, screen, setScreen, createElection, castVote, verifyVote, closeElection, resetElection, loadData, lastVote, verifyResult, setVerifyResult };
+  const ctx = { election, votes, screen, setScreen, createElection, castVote, verifyCode, closeElection, resetElection, loadData, lastVote, generatedCodes, verifyResult, setVerifyResult };
 
   if (loading) return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 300, gap: 12 }}>
-      <span style={{ fontSize: 15, color: "#888" }}>Chargement…</span>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 300 }}>
+      <span style={{ fontSize: 15, color: C.textMuted }}>Chargement…</span>
     </div>
   );
 
   return (
     <div style={{ maxWidth: 440, margin: "0 auto", padding: "1.5rem 1rem 3rem", fontFamily: "system-ui, sans-serif" }}>
       <Header screen={screen} setScreen={setScreen} election={election} />
-      {screen === "home" && <HomeScreen {...ctx} />}
-      {screen === "create" && <CreateScreen {...ctx} />}
-      {screen === "shareInfo" && <ShareInfoScreen {...ctx} />}
-      {screen === "vote" && <VoteScreen {...ctx} />}
-      {screen === "voted" && <VotedScreen {...ctx} />}
-      {screen === "verify" && <VerifyScreen {...ctx} />}
+      {screen === "home"    && <HomeScreen    {...ctx} />}
+      {screen === "create"  && <CreateScreen  {...ctx} />}
+      {screen === "codes"   && <CodesScreen   {...ctx} />}
+      {screen === "vote"    && <VoteScreen    {...ctx} />}
+      {screen === "voted"   && <VotedScreen   {...ctx} />}
+      {screen === "verify"  && <VerifyScreen  {...ctx} />}
       {screen === "results" && <ResultsScreen {...ctx} />}
     </div>
   );
 }
 
-// ─── Composants UI ───────────────────────────────────────────────────────────
+// ─── Design tokens ────────────────────────────────────────────────────────────
 
 const C = {
   bg: "#fff", bgSecondary: "#f5f5f4", border: "#e5e5e3",
@@ -125,6 +160,8 @@ const C = {
   warning: "#92400e", warningBg: "#fffbeb", warningBorder: "#fde68a",
   info: "#1e40af", infoBg: "#eff6ff", infoBorder: "#bfdbfe",
 };
+
+// ─── Composants réutilisables ─────────────────────────────────────────────────
 
 function Header({ screen, setScreen, election }) {
   return (
@@ -166,13 +203,37 @@ function Banner({ icon, text, variant = "info" }) {
 
 function Btn({ children, onClick, disabled, variant = "primary" }) {
   const v = {
-    primary: { bg: "#1a1a1a", color: "#fff", border: "transparent" },
-    secondary: { bg: "transparent", color: "#1a1a1a", border: C.border },
-    danger: { bg: C.dangerBg, color: C.danger, border: C.dangerBorder },
+    primary:   { bg: "#1a1a1a", color: "#fff",    border: "transparent" },
+    secondary: { bg: "transparent", color: C.text, border: C.border },
+    danger:    { bg: C.dangerBg, color: C.danger,  border: C.dangerBorder },
   }[variant];
   return (
     <button onClick={onClick} disabled={disabled} style={{ width: "100%", padding: "10px 16px", borderRadius: 8, fontWeight: 500, fontSize: 14, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1, border: `0.5px solid ${v.border}`, background: v.bg, color: v.color }}>
       {children}
+    </button>
+  );
+}
+
+function PrimaryBtn({ icon, label, onClick }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "13px 20px", borderRadius: 12, background: hover ? "#333" : "#1a1a1a", border: "none", cursor: "pointer", transition: "background 0.15s, transform 0.1s", transform: hover ? "translateY(-1px)" : "translateY(0)" }}>
+      <span style={{ fontSize: 16 }}>{icon}</span>
+      <span style={{ fontSize: 15, fontWeight: 500, color: "#fff" }}>{label}</span>
+    </button>
+  );
+}
+
+function ActionButton({ icon, label, sublabel, onClick }) {
+  return (
+    <button onClick={onClick} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, background: C.bg, border: `0.5px solid ${C.border}`, cursor: "pointer", textAlign: "left" }}>
+      <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: C.text }}>{label}</div>
+        {sublabel && <div style={{ fontSize: 12, color: C.textMuted, marginTop: 1 }}>{sublabel}</div>}
+      </div>
+      <span style={{ fontSize: 14, color: C.textMuted }}>›</span>
     </button>
   );
 }
@@ -182,37 +243,9 @@ function Field({ label, value, onChange, placeholder, type = "text", hint }) {
     <div style={{ marginBottom: "0.875rem" }}>
       {label && <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: C.textMuted, marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</label>}
       <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-        style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 14, background: C.bg, color: C.text, outline: "none" }} />
+        style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 14, outline: "none" }} />
       {hint && <p style={{ fontSize: 12, color: C.textMuted, margin: "4px 0 0" }}>{hint}</p>}
     </div>
-  );
-}
-
-function PrimaryBtn({ icon, label, onClick }) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "13px 20px", borderRadius: 12, background: hover ? "#333" : "#1a1a1a", border: "1px solid rgba(255,255,255,0.18)", cursor: "pointer", transition: "background 0.15s, transform 0.1s", transform: hover ? "translateY(-1px)" : "translateY(0)" }}>
-      <span style={{ fontSize: 16 }}>{icon}</span>
-      <span style={{ fontSize: 15, fontWeight: 500, color: "#fff" }}>{label}</span>
-    </button>
-  );
-}
-
-function ActionButton({ icon, label, sublabel, onClick, variant = "default" }) {
-  const isPrimary = variant === "primary";
-  return (
-    <button onClick={onClick} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, background: isPrimary ? "#1a1a1a" : C.bg, border: isPrimary ? "1px solid rgba(255,255,255,0.18)" : `0.5px solid ${C.border}`, cursor: "pointer", textAlign: "left" }}>
-      <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, color: isPrimary ? "#fff" : C.text }}>{label}</div>
-        {sublabel && <div style={{ fontSize: 12, color: isPrimary ? "rgba(255,255,255,0.6)" : C.textMuted, marginTop: 1 }}>{sublabel}</div>}
-      </div>
-      <span style={{ fontSize: 14, color: isPrimary ? "rgba(255,255,255,0.4)" : C.textMuted }}>›</span>
-    </button>
   );
 }
 
@@ -231,26 +264,38 @@ function HomeScreen({ election, votes, setScreen, loadData }) {
             <span style={{ fontSize: 13, color: C.textMuted }}>Candidats</span>
             <span style={{ fontSize: 13, fontWeight: 500 }}>{election.candidates.join(", ")}</span>
           </div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", borderBottom: `0.5px solid ${C.border}` }}>
+            <span style={{ fontSize: 13, color: C.textMuted }}>Votes reçus</span>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>{votes.length} / {election.totalCodes}</span>
+          </div>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px" }}>
-            <span style={{ fontSize: 13, color: C.textMuted }}>Votes enregistrés</span>
-            <span style={{ fontSize: 13, fontWeight: 500 }}>{votes.filter(v => election.candidates.includes(v.candidate)).length}</span>
+            <span style={{ fontSize: 13, color: C.textMuted }}>Codes distribués</span>
+            <span style={{ fontSize: 13, fontWeight: 500 }}>{election.totalCodes}</span>
           </div>
         </Section>
       )}
-      {!election && <Banner icon="ℹ️" text="Aucune élection active. L'organisateur crée une élection puis partage ce lien avec les membres." />}
+
+      {!election && <Banner icon="ℹ️" text="Aucune élection active. L'organisateur crée une élection et distribue les codes aux membres." />}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {!election && <PrimaryBtn icon="➕" label="Créer une élection" onClick={() => setScreen("create")} />}
-        {election?.status === "open" && <ActionButton icon="📨" label="Voter" sublabel="Choisir mon candidat de façon anonyme" onClick={() => setScreen("vote")} variant="primary" />}
-        {election && <ActionButton icon="📊" label="Voir les résultats" sublabel={election.status === "open" ? "Résultats masqués jusqu'à la clôture" : "Résultats finaux disponibles"} onClick={() => { loadData(); setScreen("results"); }} />}
-        {election && <ActionButton icon="🔍" label="Vérifier mon vote" sublabel="Confirmer que mon vote est bien enregistré" onClick={() => setScreen("verify")} />}
+        {election?.status === "open" && <PrimaryBtn icon="🗳️" label="Voter avec mon code" onClick={() => setScreen("vote")} />}
+        {election && <ActionButton icon="📊" label="Voir les résultats" sublabel={election.status === "open" ? "Masqués jusqu'à la clôture" : "Résultats finaux"} onClick={() => { loadData(); setScreen("results"); }} />}
+        {election && <ActionButton icon="🔍" label="Vérifier mon code" sublabel="Confirmer que mon vote est bien enregistré" onClick={() => setScreen("verify")} />}
         {election && <ActionButton icon="🔄" label="Nouvelle élection" sublabel="Remplacer l'élection actuelle" onClick={() => setScreen("create")} />}
       </div>
+
       {!election && (
         <>
           <Divider />
           <div style={{ background: C.bgSecondary, borderRadius: 12, padding: "1rem 1.25rem" }}>
             <p style={{ fontSize: 13, fontWeight: 500, margin: "0 0 12px" }}>Comment ça fonctionne</p>
-            {[["🔒", "L'organisateur crée l'élection et partage ce lien"], ["🕵️", "Chaque membre vote avec un pseudonyme connu de lui seul"], ["🙈", "Personne ne peut voir le vote des autres"], ["✅", "Chacun peut vérifier que son vote est enregistré"]].map(([icon, txt]) => (
+            {[
+              ["🎟️", "L'organisateur génère un code unique par membre"],
+              ["📩", "Chaque membre reçoit son code en privé"],
+              ["🗳️", "On vote avec son code — un seul vote possible par code"],
+              ["🔒", "Les codes sont hashés : personne ne peut savoir qui a voté pour qui"],
+            ].map(([icon, txt]) => (
               <div key={txt} style={{ display: "flex", gap: 10, marginBottom: 8 }}>
                 <span style={{ flexShrink: 0 }}>{icon}</span>
                 <span style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.5 }}>{txt}</span>
@@ -265,6 +310,7 @@ function HomeScreen({ election, votes, setScreen, loadData }) {
 
 function CreateScreen({ setScreen, createElection }) {
   const [candidates, setCandidates] = useState(["", ""]);
+  const [numMembers, setNumMembers] = useState("5");
   const [pin, setPin] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
@@ -273,23 +319,26 @@ function CreateScreen({ setScreen, createElection }) {
   async function submit() {
     const cleaned = candidates.map(c => c.trim()).filter(Boolean);
     if (cleaned.length < 2) return setError("Entrez au moins 2 candidats.");
+    const n = parseInt(numMembers);
+    if (!n || n < 1 || n > 200) return setError("Nombre de membres invalide (1–200).");
     if (pin.length < 4) return setError("Le code admin doit avoir au moins 4 caractères.");
     if (pin !== confirm) return setError("Les codes ne correspondent pas.");
     setError(""); setBusy(true);
-    await createElection(cleaned, pin);
+    await createElection(cleaned, pin, n);
     setBusy(false);
   }
 
   return (
     <>
-      <p style={{ fontSize: 13, color: C.textMuted, margin: "0 0 1rem" }}>Configurez les candidats et protégez l'élection avec un code admin.</p>
+      <p style={{ fontSize: 13, color: C.textMuted, margin: "0 0 1rem" }}>L'app génèrera un code unique par membre, à distribuer en privé.</p>
+
       <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: C.textMuted, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>Candidats</label>
       <Section style={{ marginBottom: "1rem" }}>
         {candidates.map((c, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", borderBottom: i < candidates.length - 1 ? `0.5px solid ${C.border}` : "none" }}>
             <span style={{ fontSize: 12, color: C.textMuted, padding: "0 10px", minWidth: 24, fontWeight: 500 }}>{i + 1}</span>
             <input type="text" value={c} onChange={e => { const u = [...candidates]; u[i] = e.target.value; setCandidates(u); }} placeholder={`Candidat ${i + 1}`}
-              style={{ flex: 1, border: "none", outline: "none", padding: "10px 8px", fontSize: 14, background: "transparent", color: C.text }} />
+              style={{ flex: 1, border: "none", outline: "none", padding: "10px 8px", fontSize: 14, background: "transparent" }} />
             {candidates.length > 2 && (
               <button onClick={() => setCandidates(candidates.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted, fontSize: 16, padding: "0 12px" }}>✕</button>
             )}
@@ -299,47 +348,71 @@ function CreateScreen({ setScreen, createElection }) {
           + Ajouter un candidat
         </button>
       </Section>
+
       <Section style={{ padding: "1rem 1.25rem", marginBottom: "0.75rem" }}>
-        <Field label="Code admin" value={pin} onChange={setPin} type="password" placeholder="Minimum 4 caractères" hint="Requis pour clôturer ou supprimer l'élection." />
+        <Field label="Nombre de membres votants" value={numMembers} onChange={setNumMembers} placeholder="Ex : 12" hint="Un code unique sera généré pour chaque membre." />
+        <Field label="Code admin" value={pin} onChange={setPin} type="password" placeholder="Minimum 4 caractères" hint="Pour clôturer ou supprimer l'élection." />
         <Field label="Confirmer le code" value={confirm} onChange={setConfirm} type="password" placeholder="Même code" />
       </Section>
+
       {error && <p style={{ fontSize: 13, color: C.danger, margin: "0 0 12px" }}>{error}</p>}
-      <Btn onClick={submit} disabled={busy}>{busy ? "Création en cours…" : "Créer l'élection"}</Btn>
+      <Btn onClick={submit} disabled={busy}>{busy ? "Génération des codes…" : "Créer l'élection"}</Btn>
     </>
   );
 }
 
-function ShareInfoScreen({ election, setScreen, loadData }) {
-  const [copied, setCopied] = useState(false);
+function CodesScreen({ generatedCodes, setScreen }) {
+  const [copiedIndex, setCopiedIndex] = useState(null);
+  const [copiedAll, setCopiedAll] = useState(false);
+
+  function copyCode(code, i) {
+    navigator.clipboard.writeText(code).then(() => { setCopiedIndex(i); setTimeout(() => setCopiedIndex(null), 1500); });
+  }
+
+  function copyAll() {
+    const text = generatedCodes.map((c, i) => `Membre ${i + 1} : ${c}`).join("\n");
+    navigator.clipboard.writeText(text).then(() => { setCopiedAll(true); setTimeout(() => setCopiedAll(false), 2000); });
+  }
+
   return (
     <>
-      <div style={{ textAlign: "center", padding: "1.5rem 0 1rem" }}>
+      <div style={{ textAlign: "center", padding: "1rem 0" }}>
         <div style={{ width: 56, height: 56, borderRadius: "50%", background: C.successBg, border: `0.5px solid ${C.successBorder}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px", fontSize: 28 }}>✅</div>
-        <h2 style={{ fontSize: 18, fontWeight: 500, margin: "0 0 4px" }}>Élection créée</h2>
-        <p style={{ fontSize: 13, color: C.textMuted, margin: 0 }}>Le vote est maintenant ouvert</p>
+        <h2 style={{ fontSize: 18, fontWeight: 500, margin: "0 0 4px" }}>Codes générés</h2>
+        <p style={{ fontSize: 13, color: C.textMuted, margin: 0 }}>{generatedCodes.length} codes — un par membre</p>
       </div>
-      <Section style={{ marginBottom: "1rem" }}>
-        {election?.candidates.map((c, i) => (
-          <div key={c} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderBottom: i < election.candidates.length - 1 ? `0.5px solid ${C.border}` : "none" }}>
-            <span>👤</span><span style={{ fontSize: 14 }}>{c}</span>
+
+      <Banner icon="⚠️" text="Distribuez chaque code en privé (WhatsApp, SMS…). Une fois cette page quittée, les codes en clair ne seront plus accessibles." variant="warning" />
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+        <button onClick={copyAll} style={{ background: "none", border: `0.5px solid ${C.border}`, borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", color: C.textMuted }}>
+          {copiedAll ? "✓ Tout copié" : "📋 Copier tous les codes"}
+        </button>
+      </div>
+
+      <Section style={{ maxHeight: 320, overflowY: "auto" }}>
+        {generatedCodes.map((code, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderBottom: i < generatedCodes.length - 1 ? `0.5px solid ${C.border}` : "none" }}>
+            <div>
+              <span style={{ fontSize: 12, color: C.textMuted, marginRight: 10 }}>Membre {i + 1}</span>
+              <span style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 600, letterSpacing: "0.1em", color: C.text }}>{code}</span>
+            </div>
+            <button onClick={() => copyCode(code, i)} style={{ background: "none", border: `0.5px solid ${C.border}`, borderRadius: 6, padding: "3px 10px", fontSize: 12, cursor: "pointer", color: copiedIndex === i ? C.success : C.textMuted }}>
+              {copiedIndex === i ? "✓" : "Copier"}
+            </button>
           </div>
         ))}
       </Section>
-      <Banner icon="📤" text="Partagez l'URL de cette page avec tous les membres via WhatsApp, SMS ou email." variant="info" />
-      <Banner icon="🙈" text="Vous ne verrez jamais pour qui chacun a voté — seulement le total final." variant="success" />
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <Btn variant="secondary" onClick={() => { navigator.clipboard.writeText(window.location.href).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); }}>
-          {copied ? "✓ Lien copié !" : "Copier le lien"}
-        </Btn>
-        <Btn onClick={() => { loadData(); setScreen("home"); }}>Accéder à l'accueil</Btn>
+
+      <div style={{ marginTop: "0.75rem" }}>
+        <Btn onClick={() => setScreen("home")}>J'ai distribué tous les codes</Btn>
       </div>
     </>
   );
 }
 
 function VoteScreen({ election, setScreen, castVote }) {
-  const [pseudo, setPseudo] = useState("");
-  const [secret, setSecret] = useState("");
+  const [code, setCode] = useState("");
   const [candidate, setCandidate] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -352,30 +425,33 @@ function VoteScreen({ election, setScreen, castVote }) {
   );
 
   async function submit() {
-    if (!pseudo.trim()) return setError("Choisissez un pseudonyme.");
-    if (!secret.trim()) return setError("Entrez un mot secret.");
+    if (!code.trim()) return setError("Entrez votre code.");
     if (!candidate) return setError("Sélectionnez un candidat.");
     setError(""); setBusy(true);
-    const res = await castVote(pseudo, secret, candidate);
+    const res = await castVote(code, candidate);
     if (res.error) { setError(res.error); setBusy(false); }
   }
 
   return (
     <>
-      <Banner icon="🕵️" text='Choisissez un pseudonyme que vous seul connaissez (ex: "Aigle77"). Il vous permettra de vérifier votre vote sans révéler votre identité.' variant="info" />
+      <Banner icon="🎟️" text="Entrez le code que vous avez reçu de l'organisateur. Chaque code ne peut être utilisé qu'une seule fois." variant="info" />
+
       <Section style={{ padding: "1rem 1.25rem", marginBottom: "0.75rem" }}>
-        <Field label="Pseudonyme" value={pseudo} onChange={setPseudo} placeholder="Ex : Aigle77, MonPrénom123…" />
-        <Field label="Mot secret" value={secret} onChange={setSecret} type="password" placeholder="Un mot mémorable" hint="Mémorisez-le — il ne peut pas être récupéré." />
+        <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: C.textMuted, marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.05em" }}>Votre code</label>
+        <input type="text" value={code} onChange={e => setCode(e.target.value)} placeholder="Ex : X7K2-9QLP" maxLength={9}
+          style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 18, fontFamily: "monospace", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", outline: "none" }} />
       </Section>
+
       <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: C.textMuted, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>Votre candidat</label>
       <Section style={{ marginBottom: "1rem" }}>
         {election.candidates.map((c, i) => (
           <button key={c} onClick={() => setCandidate(c)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: candidate === c ? C.bgSecondary : "transparent", border: "none", borderBottom: i < election.candidates.length - 1 ? `0.5px solid ${C.border}` : "none", cursor: "pointer", textAlign: "left" }}>
-            <span style={{ fontSize: 16, color: C.text }}>{candidate === c ? "⦿" : "○"}</span>
-            <span style={{ fontSize: 14, fontWeight: candidate === c ? 500 : 400, color: C.text }}>{c}</span>
+            <span style={{ fontSize: 16 }}>{candidate === c ? "⦿" : "○"}</span>
+            <span style={{ fontSize: 14, fontWeight: candidate === c ? 500 : 400 }}>{c}</span>
           </button>
         ))}
       </Section>
+
       {error && <p style={{ fontSize: 13, color: C.danger, margin: "0 0 10px" }}>{error}</p>}
       <Btn onClick={submit} disabled={busy}>{busy ? "Envoi en cours…" : "Confirmer mon vote"}</Btn>
     </>
@@ -389,42 +465,41 @@ function VotedScreen({ lastVote, setScreen }) {
       <h2 style={{ fontSize: 18, fontWeight: 500, margin: "0 0 6px" }}>Vote enregistré</h2>
       <p style={{ fontSize: 14, color: C.textMuted, margin: "0 0 4px" }}>Votre vote pour</p>
       <p style={{ fontSize: 22, fontWeight: 500, margin: "0 0 1.5rem" }}>{lastVote?.candidate}</p>
-      <Banner icon="⚠️" text="Mémorisez votre pseudonyme et mot secret pour pouvoir vérifier votre vote." variant="warning" />
+      <Banner icon="🔒" text="Votre code a été consommé. Il n'est plus possible de voter à nouveau avec ce code." variant="info" />
       <Btn variant="secondary" onClick={() => setScreen("home")}>Retour à l'accueil</Btn>
     </div>
   );
 }
 
-function VerifyScreen({ verifyVote, verifyResult, setVerifyResult }) {
-  const [pseudo, setPseudo] = useState("");
-  const [secret, setSecret] = useState("");
+function VerifyScreen({ verifyCode, verifyResult, setVerifyResult }) {
+  const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
 
-  if (verifyResult !== undefined) return (
-    <div style={{ textAlign: "center", padding: "2rem 0" }}>
-      <div style={{ width: 56, height: 56, borderRadius: "50%", background: verifyResult ? C.successBg : C.dangerBg, border: `0.5px solid ${verifyResult ? C.successBorder : C.dangerBorder}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px", fontSize: 28 }}>
-        {verifyResult ? "✅" : "❌"}
+  if (verifyResult !== undefined) {
+    const states = {
+      used:    { icon: "✅", title: "Vote bien enregistré",    text: "Votre code a été utilisé — votre vote est pris en compte.",    variant: "success" },
+      unused:  { icon: "⏳", title: "Code non encore utilisé", text: "Ce code est valide mais n'a pas encore servi à voter.",          variant: "warning" },
+      invalid: { icon: "❌", title: "Code invalide",           text: "Ce code ne correspond à aucun code distribué pour cette élection.", variant: "danger"  },
+    }[verifyResult];
+    return (
+      <div style={{ textAlign: "center", padding: "2rem 0" }}>
+        <div style={{ width: 56, height: 56, borderRadius: "50%", background: C[states.variant + "Bg"] || C.bgSecondary, border: `0.5px solid ${C[states.variant + "Border"] || C.border}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px", fontSize: 28 }}>{states.icon}</div>
+        <h3 style={{ fontSize: 16, fontWeight: 500, margin: "0 0 8px" }}>{states.title}</h3>
+        <p style={{ fontSize: 13, color: C.textMuted, margin: "0 0 1.5rem" }}>{states.text}</p>
+        <Btn variant="secondary" onClick={() => setVerifyResult(undefined)}>Réessayer</Btn>
       </div>
-      {verifyResult ? (
-        <>
-          <p style={{ fontSize: 13, color: C.textMuted, margin: "0 0 4px" }}>Vote enregistré pour</p>
-          <p style={{ fontSize: 22, fontWeight: 500, margin: "0 0 1.5rem" }}>{verifyResult}</p>
-        </>
-      ) : (
-        <p style={{ fontSize: 14, color: C.textMuted, margin: "0 0 1.5rem" }}>Aucun vote trouvé pour ce pseudonyme et mot secret.</p>
-      )}
-      <Btn variant="secondary" onClick={() => setVerifyResult(undefined)}>Réessayer</Btn>
-    </div>
-  );
+    );
+  }
 
   return (
     <>
-      <p style={{ fontSize: 13, color: C.textMuted, margin: "0 0 1rem" }}>Entrez votre pseudonyme et mot secret pour confirmer que votre vote est bien enregistré.</p>
+      <p style={{ fontSize: 13, color: C.textMuted, margin: "0 0 1rem" }}>Entrez votre code pour vérifier qu'il a bien été enregistré.</p>
       <Section style={{ padding: "1rem 1.25rem", marginBottom: "0.75rem" }}>
-        <Field label="Votre pseudonyme" value={pseudo} onChange={setPseudo} />
-        <Field label="Votre mot secret" value={secret} onChange={setSecret} type="password" />
+        <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: C.textMuted, marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.05em" }}>Votre code</label>
+        <input type="text" value={code} onChange={e => setCode(e.target.value)} placeholder="Ex : X7K2-9QLP" maxLength={9}
+          style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `0.5px solid ${C.border}`, fontSize: 18, fontFamily: "monospace", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", outline: "none" }} />
       </Section>
-      <Btn onClick={async () => { setBusy(true); await verifyVote(pseudo, secret); setBusy(false); }} disabled={busy}>
+      <Btn onClick={async () => { setBusy(true); await verifyCode(code); setBusy(false); }} disabled={busy}>
         {busy ? "Vérification…" : "Vérifier"}
       </Btn>
     </>
@@ -447,7 +522,7 @@ function ResultsScreen({ election, votes, setScreen, loadData, closeElection, re
   const isOpen = election.status === "open";
   const tally = Object.fromEntries(election.candidates.map(c => [c, 0]));
   votes.forEach(v => { if (tally[v.candidate] !== undefined) tally[v.candidate]++; });
-  const total = Object.values(tally).reduce((a, b) => a + b, 0);
+  const total = votes.length;
   const maxV = Math.max(...Object.values(tally), 0);
 
   async function doAction() {
@@ -461,10 +536,10 @@ function ResultsScreen({ election, votes, setScreen, loadData, closeElection, re
   return (
     <>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: "1rem" }}>
-        {[["📊", "Votes reçus", total], ["👥", "Candidats", election.candidates.length]].map(([icon, label, val]) => (
+        {[["🗳️", "Votes reçus", `${total} / ${election.totalCodes}`], ["👥", "Candidats", election.candidates.length]].map(([icon, label, val]) => (
           <div key={label} style={{ background: C.bgSecondary, borderRadius: 8, padding: "12px 14px" }}>
             <div style={{ fontSize: 13, color: C.textMuted, marginBottom: 4 }}>{icon} {label}</div>
-            <span style={{ fontSize: 22, fontWeight: 500 }}>{val}</span>
+            <span style={{ fontSize: 20, fontWeight: 500 }}>{val}</span>
           </div>
         ))}
       </div>
@@ -509,7 +584,7 @@ function ResultsScreen({ election, votes, setScreen, loadData, closeElection, re
       ) : (
         <Section style={{ padding: "1rem 1.25rem" }}>
           <p style={{ fontSize: 13, color: C.textMuted, margin: "0 0 12px" }}>
-            {action === "close" ? "Confirmer la clôture" : "Confirmer la suppression"} — entrez le code admin :
+            {action === "close" ? "Confirmer la clôture" : "Confirmer la suppression"} — code admin :
           </p>
           <Field value={pin} onChange={setPin} type="password" placeholder="Code admin" />
           {error && <p style={{ fontSize: 13, color: C.danger, margin: "0 0 10px" }}>{error}</p>}
